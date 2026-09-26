@@ -50,6 +50,12 @@ One JSON object per line. Relevant shapes (grep-extractable without jq):
 - Transcripts are **append-only**. Larger file = strictly more history, which
   makes `remote_size > local_size` a reliable "resumed on the target" signal
   (the DIVERGED guard). Equal size after rsync + equal sha256 = identical.
+- **Size alone is not sufficient.** A forked session can be rewritten into a
+  different number of records at the same byte count — observed in practice:
+  3 large records replaced by 13 small ones, identical total size *and*
+  identical mtime. Size gives no signal there, so the guard compares content
+  hashes too and refuses with `DIVERGED_SAME_SIZE` (exit 4) when two copies
+  differ at equal size. Never decide direction from size alone.
 - Copying a **live** session can in theory truncate the last line mid-append
   (never observed; line-buffered writes). The Phase 4 final re-sync heals it.
 - Two machines resuming the same uuid append incompatible histories — there is
@@ -77,4 +83,7 @@ Distilled from a real migration on 2026-08-30 between two Macs: 9 sessions,
 ~200 MB across 4 project slots, plus memory merge and a secrets audit for
 iOS/Android release pipelines. The DIVERGED guard exists because one session
 had already been resumed on the target mid-migration and a blind re-copy
-would have destroyed its newer history.
+would have destroyed its newer history. The hash comparison was added after a
+second migration, where 6 sessions had been forked on the target: their byte
+counts were unchanged, so the size-only guard would have silently overwritten
+one side of each.

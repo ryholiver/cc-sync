@@ -93,10 +93,18 @@ Use these SSH options everywhere:
    ```
 
    Copies transcript + side directory, then verifies (sha256 + file counts).
-   Exit 3 = `DIVERGED`: the remote copy is larger, meaning the session was
-   already resumed on the target. Report it to the user; **never pass
-   `--force` without their explicit confirmation** — the larger end wins by
-   default.
+   Prints `IN_SYNC <id>` when both sides already match (nothing copied).
+   Two refusal modes, neither to be overridden without the user's explicit
+   confirmation:
+
+   - Exit 3 = `DIVERGED`: the remote copy is **larger**, meaning the session
+     was already resumed on the target.
+   - Exit 4 = `DIVERGED_SAME_SIZE`: **same size but different content** — the
+     two copies have genuinely diverged (e.g. one was forked, which rewrites
+     large records into many small ones and can leave the byte count
+     identical). Size cannot see this, so content is compared by hash.
+
+   Report either to the user and stop.
 
 4. **Report**: verified list + a resume table grouped by slot, e.g.
    `cd ~/WorkSpace/vigolive/crm && claude --resume` for crm-slot sessions.
@@ -163,10 +171,11 @@ just sessions), sync these — judgment applies to each:
 
 If the user opted in, a `SessionEnd` hook runs `scripts/auto-sync.sh`: every
 time a session ends, its transcript + side directory are pushed to
-`DEFAULT_PEER`, silently. It uses the same divergence guard (a larger peer
-copy wins → skip) and exits quietly on any failure — an offline peer never
-blocks or noises up a session. A skipped/failed auto-sync is healed by the
-next one, or by running Phase 1 manually. To set it up later:
+`DEFAULT_PEER`, silently. It uses the same divergence guard — it skips when
+the peer copy is larger **or** when the sizes match but the hashes differ —
+and exits quietly on any failure; an offline peer never blocks or noises up
+a session. A skipped/failed auto-sync is healed by the next one, or by running
+Phase 1 manually. To set it up later:
 re-run `install.sh` (or `CC_SYNC_PEER=user@host bash install.sh`).
 
 ## Phase 4 — Final sync & discipline
@@ -180,9 +189,11 @@ Rules to state in the final report:
 - **One machine per session.** Transcripts are append-only; two machines
   appending to the same session produce histories that cannot be merged.
   A synced session's home is now the target.
-- If a session did fork, the newer (larger) end wins; re-sync it back with
-  this skill in the opposite direction — the skill is symmetric, just run it
-  on the other machine.
+- If a session did fork, the guard refuses in **both** directions rather than
+  guessing: a larger end means it was resumed there (exit 3), and an equal
+  size with a different hash means the two histories genuinely diverged
+  (exit 4). Ask the user which side to keep, then re-run with `--force` in the
+  chosen direction — the skill is symmetric, just run it on the other machine.
 - Cross-network: with Tailscale on both ends, the flow is identical to LAN —
   only the hostname changes.
 
@@ -193,15 +204,17 @@ Rules to state in the final report:
   with `while IFS= read -r` — keep it that way.
 - Title extraction degrades `aiTitle` → `summary` → `(untitled)`; these are
   undocumented internals and may change across Claude Code versions.
-- Divergence check compares sizes *before* copying; append-only semantics make
-  size a reliable signal.
+- Divergence check runs *before* copying and compares size **and content
+  hash**. Append-only semantics make size a reliable "resumed on the target"
+  signal, but size alone is blind to a fork that rewrote records at constant
+  byte count — hence the hash. Do not "simplify" this back to size-only.
 
 ## Bundled Resources
 
 | File | Purpose |
 |---|---|
 | `scripts/list-sessions.sh` | Enumerate sessions for a project + subdirectory slots → TSV. `--remote user@host` runs it on the target via `ssh bash -s` (zero deployment). |
-| `scripts/sync-session.sh` | Copy one session (transcript + side dir) with divergence guard and sha256/count verification. Exit 0/2/3. |
+| `scripts/sync-session.sh` | Copy one session (transcript + side dir) with size **and hash** divergence guard and sha256/count verification. Exit 0/1/2/3/4. |
 | `scripts/audit-deps.sh` | Extract a session's footprint (CWD distribution, files written) as classified TSV. Local only. |
 | `scripts/auto-sync.sh` | SessionEnd hook target: silent, divergence-guarded push of the just-ended session to DEFAULT_PEER. |
 | `uninstall.sh` | Remove skill + auto-sync hook + conf; synced data is never touched. |

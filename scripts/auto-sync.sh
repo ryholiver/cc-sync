@@ -31,10 +31,22 @@ SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout
 fsize() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
 
 local_size=$(fsize "$tp") || exit 0
-remote_size=$(ssh "${SSH_OPTS[@]}" "$DEFAULT_PEER" \
-  "stat -f %z '$rel/$sid.jsonl' 2>/dev/null || stat -c %s '$rel/$sid.jsonl' 2>/dev/null" 2>/dev/null) || remote_size=0
+local_sum=$(shasum -a 256 "$tp" 2>/dev/null | cut -d' ' -f1)
+remote_info=$(ssh "${SSH_OPTS[@]}" "$DEFAULT_PEER" \
+  "f='$rel/$sid.jsonl'; if [ -f \"\$f\" ]; then stat -f %z \"\$f\" 2>/dev/null || stat -c %s \"\$f\" 2>/dev/null; shasum -a 256 \"\$f\" 2>/dev/null | cut -d' ' -f1; fi" 2>/dev/null) || remote_info=""
+remote_size=$(printf '%s\n' "$remote_info" | sed -n 1p | tr -d ' \t')
+remote_sum=$(printf '%s\n' "$remote_info" | sed -n 2p | tr -d ' \t')
 remote_size="${remote_size:-0}"
-[ "$remote_size" -gt "$local_size" ] && exit 0   # diverged → the peer's history wins
+
+# 分流保护，两种情形都直接退场（钩子必须安静，一律 exit 0）：
+#   对面更大       → 会话已在对面续写，那份历史更全
+#   等大但哈希不同 → 两份历史已真分歧（如 fork 过），无法判断谁该赢
+# 只比大小会漏掉后一种，从而静默覆盖掉一方。这里宁可不同步，也不猜。
+[ "$remote_size" -gt "$local_size" ] && exit 0
+if [ "$remote_size" -eq "$local_size" ] && [ "$remote_size" -gt 0 ] \
+   && [ -n "$remote_sum" ] && [ "$remote_sum" != "$local_sum" ]; then
+  exit 0
+fi
 
 ssh "${SSH_OPTS[@]}" "$DEFAULT_PEER" "mkdir -p '$rel'" 2>/dev/null || exit 0
 rsync -a --timeout=30 "$tp" "$DEFAULT_PEER:$rel/" 2>/dev/null || exit 0
